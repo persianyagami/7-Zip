@@ -26,10 +26,29 @@ BSTR SysAllocStringByteLen(LPCSTR psz, UINT len)
     return 0;
   *(UINT *)p = len;
   BSTR bstr = (BSTR)((UINT *)p + 1);
-  memmove(bstr, psz, len);
-  Byte *pb = ((Byte *)bstr) + len;
-  for (int i = 0; i < sizeof(OLECHAR) * 2; i++)
-    pb[i] = 0;
+  if (psz)
+  {
+    memcpy(bstr, psz, len);
+    Byte *pb = ((Byte *)bstr) + len;
+    for (unsigned i = 0; i < sizeof(OLECHAR) * 2; i++)
+      pb[i] = 0;
+  }
+  return bstr;
+}
+
+BSTR SysAllocStringLen(const OLECHAR *sz, UINT len)
+{
+  int realLen = sizeof(UINT) + len * sizeof(OLECHAR) + sizeof(OLECHAR);
+  void *p = AllocateForBSTR(realLen);
+  if (p == 0)
+    return 0;
+  *(UINT *)p = len * sizeof(OLECHAR);
+  BSTR bstr = (BSTR)((UINT *)p + 1);
+  if (sz)
+  {
+    memcpy(bstr, sz, len * sizeof(OLECHAR));
+    bstr[len] = 0;
+  }
   return bstr;
 }
 
@@ -42,9 +61,9 @@ BSTR SysAllocString(const OLECHAR *sz)
   void *p = AllocateForBSTR(len + sizeof(UINT));
   if (p == 0)
     return 0;
-  *(UINT *)p = strLen;
+  *(UINT *)p = strLen * sizeof(OLECHAR);
   BSTR bstr = (BSTR)((UINT *)p + 1);
-  memmove(bstr, sz, len);
+  memcpy(bstr, sz, len);
   return bstr;
 }
 
@@ -74,7 +93,7 @@ HRESULT VariantClear(VARIANTARG *prop)
   return S_OK;
 }
 
-HRESULT VariantCopy(VARIANTARG *dest, VARIANTARG *src)
+HRESULT VariantCopy(VARIANTARG *dest, const VARIANTARG *src)
 {
   HRESULT res = ::VariantClear(dest);
   if (res != S_OK)
