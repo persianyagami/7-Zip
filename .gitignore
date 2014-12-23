@@ -35,8 +35,6 @@ $RECYCLE.BIN/
 [Rr]eleases/
 bld/
 build/
-x64/
-x86/
 
 # Roslyn cache directories
 *.ide/
