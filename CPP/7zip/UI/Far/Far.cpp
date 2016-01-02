@@ -3,6 +3,8 @@
 
 #include "StdAfx.h"
 
+#include "../../../Common/MyWindows.h"
+
 #include "../../../Common/MyInitGuid.h"
 
 #include "../../../Common/StringConvert.h"
@@ -96,6 +98,7 @@ EXTERN_C void WINAPI SetStartupInfo(const PluginStartupInfo *info)
 class COpenArchiveCallback:
   public IArchiveOpenCallback,
   public IArchiveOpenVolumeCallback,
+  public IArchiveOpenSetSubArchiveName,
   public IProgress,
   public ICryptoGetTextPassword,
   public CMyUnknownImp
@@ -109,6 +112,8 @@ class COpenArchiveCallback:
   bool _numBytesTotalDefined;
 
   NFind::CFileInfo _fileInfo;
+  bool _subArchiveMode;
+  UString _subArchiveName;
 public:
   bool PasswordIsDefined;
   UString Password;
@@ -116,8 +121,9 @@ public:
   FString _folderPrefix;
 
 public:
-  MY_UNKNOWN_IMP3(
+  MY_UNKNOWN_IMP4(
      IArchiveOpenVolumeCallback,
+     IArchiveOpenSetSubArchiveName,
      IProgress,
      ICryptoGetTextPassword
     )
@@ -134,12 +140,23 @@ public:
   STDMETHOD(GetProperty)(PROPID propID, PROPVARIANT *value);
   STDMETHOD(GetStream)(const wchar_t *name, IInStream **inStream);
 
+  STDMETHOD(SetSubArchiveName(const wchar_t *name))
+  {
+    _subArchiveMode = true;
+    _subArchiveName = name;
+    return S_OK;
+  }
+
   // ICryptoGetTextPassword
   STDMETHOD(CryptoGetTextPassword)(BSTR *password);
 
+  COpenArchiveCallback(): _subArchiveMode(false) {}
+  
   void Init()
   {
     PasswordIsDefined = false;
+
+    _subArchiveMode = false;
 
     _numFilesTotalDefined = false;
     _numBytesTotalDefined = false;
@@ -220,6 +237,8 @@ STDMETHODIMP COpenArchiveCallback::GetStream(const wchar_t *name, IInStream **in
 {
   if (WasEscPressed())
     return E_ABORT;
+  if (_subArchiveMode)
+    return S_FALSE;
   *inStream = NULL;
   FString fullPath = _folderPrefix + us2fs(name);
   if (!_fileInfo.Find(fullPath))
@@ -238,7 +257,15 @@ STDMETHODIMP COpenArchiveCallback::GetStream(const wchar_t *name, IInStream **in
 STDMETHODIMP COpenArchiveCallback::GetProperty(PROPID propID, PROPVARIANT *value)
 {
   NCOM::CPropVariant prop;
-  switch(propID)
+  if (_subArchiveMode)
+  {
+    switch (propID)
+    {
+      case kpidName: prop = _subArchiveName; break;
+    }
+  }
+  else
+  switch (propID)
   {
     case kpidName:  prop = GetUnicodeString(_fileInfo.Name, CP_OEMCP); break;
     case kpidIsDir:  prop = _fileInfo.IsDir(); break;
@@ -346,17 +373,20 @@ static HANDLE MyOpenFilePluginW(const wchar_t *name)
   HRESULT result = ::OpenArchive(fullName, &archiveHandler,
       archiverInfoResult, defaultName, openArchiveCallback);
   */
-  if (result != S_OK)
-  {
-    if (result == E_ABORT)
-      return (HANDLE)-2;
-    ShowSysErrorMessage(result);
-    return INVALID_HANDLE_VALUE;
-  }
+  if (result == E_ABORT)
+    return (HANDLE)-2;
 
   UString errorMessage = agent->GetErrorMessage();
   if (!errorMessage.IsEmpty())
     g_StartupInfo.ShowErrorMessage(UnicodeStringToMultiByte(errorMessage, CP_OEMCP));
+
+  if (result != S_OK)
+  {
+    if (result == S_FALSE)
+      return INVALID_HANDLE_VALUE;
+    ShowSysErrorMessage(result);
+    return INVALID_HANDLE_VALUE;
+  }
 
   // ::OutputDebugStringA("after OpenArchive\n");
 
@@ -417,30 +447,34 @@ EXTERN_C HANDLE WINAPI OpenFilePluginW(const wchar_t *name,const unsigned char *
 EXTERN_C HANDLE WINAPI OpenPlugin(int openFrom, INT_PTR item)
 {
   MY_TRY_BEGIN;
-  if(openFrom == OPEN_COMMANDLINE)
+  
+  if (openFrom == OPEN_COMMANDLINE)
   {
     AString fileName = (const char *)item;
-    if(fileName.IsEmpty())
+    if (fileName.IsEmpty())
       return INVALID_HANDLE_VALUE;
-    if (fileName.Len() >= 2 &&
-        fileName[0] == '\"' && fileName.Back() == '\"')
+    if (fileName.Len() >= 2
+        && fileName[0] == '\"'
+        && fileName.Back() == '\"')
     {
       fileName.DeleteBack();
       fileName.DeleteFrontal(1);
     }
     return MyOpenFilePlugin(fileName);
   }
-  if(openFrom == OPEN_PLUGINSMENU)
+  
+  if (openFrom == OPEN_PLUGINSMENU)
   {
-    switch(item)
+    switch (item)
     {
       case 0:
       {
         PluginPanelItem pluginPanelItem;
-        if(!g_StartupInfo.ControlGetActivePanelCurrentItemInfo(pluginPanelItem))
+        if (!g_StartupInfo.ControlGetActivePanelCurrentItemInfo(pluginPanelItem))
           throw 142134;
         return MyOpenFilePlugin(pluginPanelItem.FindData.cFileName);
       }
+      
       case 1:
       {
         CObjectVector<PluginPanelItem> pluginPanelItem;
@@ -461,10 +495,12 @@ EXTERN_C HANDLE WINAPI OpenPlugin(int openFrom, INT_PTR item)
         }
         return INVALID_HANDLE_VALUE;
       }
+      
       default:
         throw 4282215;
     }
   }
+
   return INVALID_HANDLE_VALUE;
   MY_TRY_END2("OpenPlugin", INVALID_HANDLE_VALUE);
 }

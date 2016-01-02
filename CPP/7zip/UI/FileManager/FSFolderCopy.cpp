@@ -2,6 +2,8 @@
 
 #include "StdAfx.h"
 
+#include "../../../Common/MyWindows.h"
+
 #include <Winbase.h>
 
 #include "../../../Common/Defs.h"
@@ -206,7 +208,6 @@ struct CCopyState
 {
   CProgressInfo ProgressInfo;
   IFolderOperationsExtractCallback *Callback;
-  UInt64 TotalSize;
   bool MoveMode;
   bool UseReadWriteMode;
 
@@ -421,7 +422,7 @@ static HRESULT CopyFile_Ask(
       NFsFolder::CCopyStateIO state2;
       state2.Progress = state.Callback;
       state2.DeleteSrcFile = state.MoveMode;
-      state2.TotalSize = state.TotalSize;
+      state2.TotalSize = state.ProgressInfo.TotalSize;
       state2.StartPos = state.ProgressInfo.StartPos;
       RINOK(state2.MyCopyFile(srcPath, destPathNew));
       if (state2.ErrorFileIndex >= 0)
@@ -458,10 +459,10 @@ static HRESULT CopyFile_Ask(
   }
   else
   {
-    if (state.TotalSize >= srcFileInfo.Size)
+    if (state.ProgressInfo.TotalSize >= srcFileInfo.Size)
     {
-      state.TotalSize -= srcFileInfo.Size;
-      RINOK(state.ProgressInfo.Progress->SetTotal(state.TotalSize));
+      state.ProgressInfo.TotalSize -= srcFileInfo.Size;
+      RINOK(state.ProgressInfo.Progress->SetTotal(state.ProgressInfo.TotalSize));
     }
   }
   return state.CallProgress();
@@ -585,7 +586,6 @@ STDMETHODIMP CFSFolder::CopyTo(Int32 moveMode, const UInt32 *indices, UInt32 num
 
   CCopyState state;
   state.ProgressInfo.TotalSize = stat.Size;
-  state.ProgressInfo.TotalSize = stat.Size;
   state.ProgressInfo.StartPos = 0;
   state.ProgressInfo.Progress = callback;
   state.ProgressInfo.Init();
@@ -593,7 +593,6 @@ STDMETHODIMP CFSFolder::CopyTo(Int32 moveMode, const UInt32 *indices, UInt32 num
   state.MoveMode = IntToBool(moveMode);
   state.UseReadWriteMode = isAltDest;
   state.Prepare();
-  state.TotalSize = stat.Size;
 
   for (UInt32 i = 0; i < numItems; i++)
   {

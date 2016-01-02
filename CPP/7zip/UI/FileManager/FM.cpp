@@ -2,6 +2,10 @@
 
 #include "StdAfx.h"
 
+#include "../../../Common/MyWindows.h"
+
+#include <shlwapi.h>
+
 #include "../../../../C/Alloc.h"
 
 #include "../../../Common/IntToString.h"
@@ -38,6 +42,7 @@ using namespace NFind;
 
 #define MENU_HEIGHT 26
 
+bool g_RAM_Size_Defined;
 UInt64 g_RAM_Size;
 
 #ifdef _WIN32
@@ -319,42 +324,44 @@ static void GetCommands(const UString &aCommandLine, UString &aCommands)
 }
 */
 
-/*
-#ifndef _WIN64
-typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS) (HANDLE, PBOOL);
+#if defined(_WIN32) && !defined(_WIN64) && !defined(UNDER_CE)
 
-static bool IsWow64()
+bool g_Is_Wow64;
+
+typedef BOOL (WINAPI *Func_IsWow64Process)(HANDLE, PBOOL);
+
+static void Set_Wow64()
 {
-  LPFN_ISWOW64PROCESS  fnIsWow64Process = (LPFN_ISWOW64PROCESS)GetProcAddress(
-      GetModuleHandle("kernel32"), "IsWow64Process");
-  if (fnIsWow64Process == NULL)
-    return false;
-  BOOL isWow;
-  if (!fnIsWow64Process(GetCurrentProcess(),&isWow))
-    return false;
-  return isWow != FALSE;
+  g_Is_Wow64 = false;
+  Func_IsWow64Process fnIsWow64Process = (Func_IsWow64Process)GetProcAddress(
+      GetModuleHandleA("kernel32.dll"), "IsWow64Process");
+  if (fnIsWow64Process)
+  {
+    BOOL isWow;
+    if (fnIsWow64Process(GetCurrentProcess(), &isWow))
+      g_Is_Wow64 = (isWow != FALSE);
+  }
 }
+
 #endif
-*/
+
 
 bool IsLargePageSupported()
 {
   #ifdef _WIN64
   return true;
   #else
-  OSVERSIONINFO versionInfo;
-  versionInfo.dwOSVersionInfoSize = sizeof(versionInfo);
-  if (!::GetVersionEx(&versionInfo))
+  OSVERSIONINFO vi;
+  vi.dwOSVersionInfoSize = sizeof(vi);
+  if (!::GetVersionEx(&vi))
     return false;
-  if (versionInfo.dwPlatformId != VER_PLATFORM_WIN32_NT || versionInfo.dwMajorVersion < 5)
+  if (vi.dwPlatformId != VER_PLATFORM_WIN32_NT)
     return false;
-  if (versionInfo.dwMajorVersion > 5)
-    return true;
-  if (versionInfo.dwMinorVersion < 1)
-    return false;
-  if (versionInfo.dwMinorVersion > 1)
-    return true;
-  // return IsWow64();
+  if (vi.dwMajorVersion < 5) return false;
+  if (vi.dwMajorVersion > 5) return true;
+  if (vi.dwMinorVersion < 1) return false;
+  if (vi.dwMinorVersion > 1) return true;
+  // return g_Is_Wow64;
   return false;
   #endif
 }
@@ -377,11 +384,11 @@ bool g_SymLink_Supported = false;
 static void Set_SymLink_Supported()
 {
   g_SymLink_Supported = false;
-  OSVERSIONINFO versionInfo;
-  versionInfo.dwOSVersionInfoSize = sizeof(versionInfo);
-  if (!::GetVersionEx(&versionInfo))
+  OSVERSIONINFO vi;
+  vi.dwOSVersionInfoSize = sizeof(vi);
+  if (!::GetVersionEx(&vi))
     return;
-  if (versionInfo.dwPlatformId != VER_PLATFORM_WIN32_NT || versionInfo.dwMajorVersion < 6)
+  if (vi.dwPlatformId != VER_PLATFORM_WIN32_NT || vi.dwMajorVersion < 6)
     return;
   g_SymLink_Supported = true;
   // if (g_SymLink_Supported)
@@ -421,7 +428,7 @@ static void ErrorMessage(const wchar_t *s)
 
 static int WINAPI WinMain2(int nCmdShow)
 {
-  g_RAM_Size = NSystem::GetRamSize();
+  g_RAM_Size_Defined = NSystem::GetRamSize(g_RAM_Size);
 
   #ifdef _WIN32
 
@@ -462,6 +469,11 @@ static int WINAPI WinMain2(int nCmdShow)
   g_ComCtl32Version = ::GetDllVersion(TEXT("comctl32.dll"));
   g_LVN_ITEMACTIVATE_Support = (g_ComCtl32Version >= MAKELONG(71, 4));
   #endif
+
+  #if defined(_WIN32) && !defined(_WIN64) && !defined(UNDER_CE)
+  Set_Wow64();
+  #endif
+
 
   g_IsSmallScreen = !NWindows::NControl::IsDialogSizeOK(200, 200);
 
@@ -630,7 +642,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /* hPrevInstance */,
 
   try
   {
-    return WinMain2(nCmdShow);
+    try
+    {
+      return WinMain2(nCmdShow);
+    }
+    catch (...)
+    {
+      g_ExitEventLauncher.Exit(true);
+      throw;
+    }
   }
   catch(const CNewException &)
   {
@@ -850,15 +870,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
       g_App.Save();
       g_App.Release();
       SaveWindowInfo(hWnd);
+
+      g_ExitEventLauncher.Exit(true);
       PostQuitMessage(0);
       break;
     }
-    /*
-    case WM_MOVE:
-    {
-      break;
-    }
-    */
+    
+    // case WM_MOVE: break;
+    
     case WM_LBUTTONDOWN:
       g_StartCaptureMousePos = LOWORD(lParam);
       g_StartCaptureSplitterPos = g_Splitter.GetPos();
@@ -988,6 +1007,7 @@ void CApp::MoveSubWindows()
   if (xSize == 0)
     return;
   int headerSize = 0;
+
   #ifdef UNDER_CE
   _commandBar.AutoSize();
   {
@@ -995,6 +1015,7 @@ void CApp::MoveSubWindows()
     headerSize += _commandBar.Height();
   }
   #endif
+
   if (_toolBar)
   {
     _toolBar.AutoSize();
@@ -1004,6 +1025,7 @@ void CApp::MoveSubWindows()
     #endif
     headerSize += Window_GetRealHeight(_toolBar);
   }
+  
   int ySize = MyMax((int)(rect.bottom - headerSize), 0);
   
   if (NumPanels > 1)

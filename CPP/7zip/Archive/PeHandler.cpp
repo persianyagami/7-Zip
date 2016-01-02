@@ -347,18 +347,24 @@ struct CSection
 
   CSection(): IsRealSect(false), IsDebug(false), IsAdditionalSection(false) {}
 
+  // const UInt32 GetSize() const { return PSize; }
+  const UInt32 GetSize() const { return MyMin(PSize, VSize); }
+
   void UpdateTotalSize(UInt32 &totalSize) const
   {
     UInt32 t = Pa + PSize;
     if (totalSize < t)
       totalSize = t;
   }
+  
   void Parse(const Byte *p);
 
   int Compare(const CSection &s) const
   {
     RINOZ(MyCompare(Pa, s.Pa));
-    return MyCompare(PSize, s.PSize);
+    UInt32 size1 = GetSize();
+    UInt32 size2 = s.GetSize();
+    return MyCompare(size1, size2);
   }
 };
 
@@ -765,7 +771,7 @@ enum
   // kpidBaseOfData32,
 };
 
-static const STATPROPSTG kArcProps[] =
+static const CStatProp kArcProps[] =
 {
   // { NULL, kpidWarning, VT_BSTR},
   { NULL, kpidCpu, VT_BSTR},
@@ -776,28 +782,28 @@ static const STATPROPSTG kArcProps[] =
   { NULL, kpidChecksum, VT_UI4},
   { NULL, kpidName, VT_BSTR},
 
-  { (LPOLESTR)L"Image Size", kpidImageSize, VT_UI4},
-  { (LPOLESTR)L"Section Alignment", kpidSectAlign, VT_UI4},
-  { (LPOLESTR)L"File Alignment", kpidFileAlign, VT_UI4},
-  { (LPOLESTR)L"Code Size", kpidCodeSize, VT_UI4},
-  { (LPOLESTR)L"Initialized Data Size", kpidInitDataSize, VT_UI4},
-  { (LPOLESTR)L"Uninitialized Data Size", kpidUnInitDataSize, VT_UI4},
-  { (LPOLESTR)L"Linker Version", kpidLinkerVer, VT_BSTR},
-  { (LPOLESTR)L"OS Version", kpidOsVer, VT_BSTR},
-  { (LPOLESTR)L"Image Version", kpidImageVer, VT_BSTR},
-  { (LPOLESTR)L"Subsystem Version", kpidSubsysVer, VT_BSTR},
-  { (LPOLESTR)L"Subsystem", kpidSubSystem, VT_BSTR},
-  { (LPOLESTR)L"DLL Characteristics", kpidDllCharacts, VT_BSTR},
-  { (LPOLESTR)L"Stack Reserve", kpidStackReserve, VT_UI8},
-  { (LPOLESTR)L"Stack Commit", kpidStackCommit, VT_UI8},
-  { (LPOLESTR)L"Heap Reserve", kpidHeapReserve, VT_UI8},
-  { (LPOLESTR)L"Heap Commit", kpidHeapCommit, VT_UI8},
-  { (LPOLESTR)L"Image Base", kpidImageBase, VT_UI8},
+  { "Image Size", kpidImageSize, VT_UI4},
+  { "Section Alignment", kpidSectAlign, VT_UI4},
+  { "File Alignment", kpidFileAlign, VT_UI4},
+  { "Code Size", kpidCodeSize, VT_UI4},
+  { "Initialized Data Size", kpidInitDataSize, VT_UI4},
+  { "Uninitialized Data Size", kpidUnInitDataSize, VT_UI4},
+  { "Linker Version", kpidLinkerVer, VT_BSTR},
+  { "OS Version", kpidOsVer, VT_BSTR},
+  { "Image Version", kpidImageVer, VT_BSTR},
+  { "Subsystem Version", kpidSubsysVer, VT_BSTR},
+  { "Subsystem", kpidSubSystem, VT_BSTR},
+  { "DLL Characteristics", kpidDllCharacts, VT_BSTR},
+  { "Stack Reserve", kpidStackReserve, VT_UI8},
+  { "Stack Commit", kpidStackCommit, VT_UI8},
+  { "Heap Reserve", kpidHeapReserve, VT_UI8},
+  { "Heap Commit", kpidHeapCommit, VT_UI8},
+  { "Image Base", kpidImageBase, VT_UI8},
   { NULL, kpidComment, VT_BSTR},
   
-  // { (LPOLESTR)L"Address Of Entry Point", kpidAddressOfEntryPoint, VT_UI8},
-  // { (LPOLESTR)L"Base Of Code", kpidBaseOfCode, VT_UI8},
-  // { (LPOLESTR)L"Base Of Data", kpidBaseOfData32, VT_UI8},
+  // { "Address Of Entry Point", kpidAddressOfEntryPoint, VT_UI8},
+  // { "Base Of Code", kpidBaseOfCode, VT_UI8},
+  // { "Base Of Data", kpidBaseOfData32, VT_UI8},
 };
 
 static const Byte kProps[] =
@@ -1039,7 +1045,7 @@ STDMETHODIMP CHandler::GetProperty(UInt32 index, PROPID propID, PROPVARIANT *val
     switch (propID)
     {
       case kpidPath: prop = MultiByteToUnicodeString(item.Name); break;
-      case kpidSize: prop = (UInt64)MyMin(item.PSize, item.VSize); break;
+      case kpidSize: prop = (UInt64)item.GetSize(); break;
       case kpidPackSize: prop = (UInt64)item.PSize; break;
       case kpidVirtualSize: prop = (UInt64)item.VSize; break;
       case kpidOffset: prop = item.Pa; break;
@@ -1883,14 +1889,17 @@ static bool ParseVersion(const Byte *p, UInt32 size, CTextFile &f, CObjectVector
     }
     f.CloseBlock(2);
   }
+
   f.CloseBlock(0);
   return true;
 }
 
+
 HRESULT CHandler::OpenResources(unsigned sectionIndex, IInStream *stream, IArchiveOpenCallback *callback)
 {
   const CSection &sect = _sections[sectionIndex];
-  size_t fileSize = sect.PSize; // Maybe we need sect.VSize here !!!
+  const size_t fileSize = sect.GetSize();
+
   if (fileSize > kFileSizeMax)
     return S_FALSE;
   {
@@ -2031,8 +2040,8 @@ HRESULT CHandler::OpenResources(unsigned sectionIndex, IInStream *stream, IArchi
   {
     UInt32 mask = (1 << numBits) - 1;
     size_t end = ((maxOffset + mask) & ~mask);
-    // 9.29: we use only PSize. PSize can be larger than VSize
-    if (/* end < sect.VSize && */ end <= sect.PSize)
+    
+    if (/* end < sect.VSize && */ end <= sect.GetSize())
     {
       CSection sect2;
       sect2.Flags = 0;
@@ -2050,7 +2059,8 @@ HRESULT CHandler::OpenResources(unsigned sectionIndex, IInStream *stream, IArchi
 
       // 9.29: we use sect.PSize instead of sect.VSize to support some CAB-SFX
       // the code for .rsrc_2 is commented.
-      sect2.PSize = sect.PSize - (UInt32)maxOffset;
+      sect2.PSize = sect.GetSize() - (UInt32)maxOffset;
+
       if (sect2.PSize != 0)
       {
         sect2.VSize = sect2.PSize;
@@ -2233,7 +2243,7 @@ HRESULT CHandler::Open2(IInStream *stream, IArchiveOpenCallback *callback)
     sections.Sort();
     UInt32 limit = (1 << 12);
     unsigned num = 0;
-    FOR_VECTOR(i, sections)
+    FOR_VECTOR (i, sections)
     {
       const CSection &s = sections[i];
       if (s.Pa > limit)
@@ -2463,7 +2473,7 @@ STDMETHODIMP CHandler::Extract(const UInt32 *indices, UInt32 numItems,
     else if (mixItem.ResourceIndex >= 0)
       size = _items[mixItem.ResourceIndex].GetSize();
     else
-      size = _sections[mixItem.SectionIndex].PSize;
+      size = _sections[mixItem.SectionIndex].GetSize();
     totalSize += size;
   }
   extractCallback->SetTotal(totalSize);
@@ -2539,7 +2549,7 @@ STDMETHODIMP CHandler::Extract(const UInt32 *indices, UInt32 numItems,
     }
     else
     {
-      currentItemSize = sect.PSize;
+      currentItemSize = sect.GetSize();
       if (!testMode && !outStream)
         continue;
       
@@ -2798,12 +2808,12 @@ enum
   // , kpidImageBase
 };
 
-static const STATPROPSTG kArcProps[] =
+static const CStatProp kArcProps[] =
 {
   // { NULL, kpidHeadersSize, VT_UI4 },
   { NULL, kpidCpu, VT_BSTR},
-  { (LPOLESTR)L"Subsystem", kpidSubSystem, VT_BSTR },
-  // { (LPOLESTR)L"Image Base", kpidImageBase, VT_UI8 }
+  { "Subsystem", kpidSubSystem, VT_BSTR },
+  // { "Image Base", kpidImageBase, VT_UI8 }
 };
 
 IMP_IInArchive_Props

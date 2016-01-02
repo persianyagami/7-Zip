@@ -183,13 +183,13 @@ HRESULT CPanel::BindToPath(const UString &fullPath, const UString &arcFormat, bo
       FString dirPrefix, fileName;
       NDir::GetFullPathAndSplit(us2fs(sysPath), dirPrefix, fileName);
       HRESULT res;
-      // = OpenItemAsArchive(fs2us(fileName), arcFormat, encrypted);
+      // = OpenAsArc(fs2us(fileName), arcFormat, encrypted);
       {
         CTempFileInfo tfi;
         tfi.RelPath = fs2us(fileName);
         tfi.FolderPath = dirPrefix;
         tfi.FilePath = us2fs(sysPath);
-        res = OpenItemAsArchive(NULL, tfi, sysPath, arcFormat, encrypted);
+        res = OpenAsArc(NULL, tfi, sysPath, arcFormat, encrypted);
       }
       
       if (res == S_FALSE)
@@ -204,6 +204,7 @@ HRESULT CPanel::BindToPath(const UString &fullPath, const UString &arcFormat, bo
           path.Delete(0);
       }
     }
+    
     if (newFolder)
     {
       SetNewFolder(newFolder);
@@ -359,7 +360,7 @@ LRESULT CPanel::OnNotifyComboBoxEnter(const UString &s)
 {
   if (BindToPathAndRefresh(GetUnicodeString(s)) == S_OK)
   {
-    PostMessage(kSetFocusToListView);
+    PostMsg(kSetFocusToListView);
     return TRUE;
   }
   return FALSE;
@@ -370,7 +371,7 @@ bool CPanel::OnNotifyComboBoxEndEdit(PNMCBEENDEDITW info, LRESULT &result)
   if (info->iWhy == CBENF_ESCAPE)
   {
     _headerComboBox.SetText(_currentFolderPrefix);
-    PostMessage(kSetFocusToListView);
+    PostMsg(kSetFocusToListView);
     result = FALSE;
     return true;
   }
@@ -401,7 +402,7 @@ bool CPanel::OnNotifyComboBoxEndEdit(PNMCBEENDEDIT info, LRESULT &result)
   if (info->iWhy == CBENF_ESCAPE)
   {
     _headerComboBox.SetText(_currentFolderPrefix);
-    PostMessage(kSetFocusToListView);
+    PostMsg(kSetFocusToListView);
     result = FALSE;
     return true;
   }
@@ -460,7 +461,7 @@ extern UString RootFolder_GetName_Documents(int &iconIndex);
 bool CPanel::OnComboBoxCommand(UINT code, LPARAM /* param */, LRESULT &result)
 {
   result = FALSE;
-  switch(code)
+  switch (code)
   {
     case CBN_DROPDOWN:
     {
@@ -528,9 +529,9 @@ bool CPanel::OnComboBoxCommand(UINT code, LPARAM /* param */, LRESULT &result)
         // _headerComboBox.SetText(pass); // it's fix for seclecting by mouse.
         if (BindToPathAndRefresh(pass) == S_OK)
         {
-          PostMessage(kSetFocusToListView);
+          PostMsg(kSetFocusToListView);
           #ifdef UNDER_CE
-          PostMessage(kRefresh_HeaderComboBox);
+          PostMsg(kRefresh_HeaderComboBox);
           #endif
           return true;
         }

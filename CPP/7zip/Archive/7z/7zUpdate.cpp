@@ -118,11 +118,11 @@ static int Parse_EXE(const Byte *buf, size_t size, CFilterMode *filterMode)
 
 #define ELF_SIG 0x464C457F
 
-#define	ELF_CLASS_32	1
-#define	ELF_CLASS_64	2
+#define ELF_CLASS_32  1
+#define ELF_CLASS_64  2
 
-#define	ELF_DATA_2LSB	1
-#define	ELF_DATA_2MSB	2
+#define ELF_DATA_2LSB 1
+#define ELF_DATA_2MSB 2
 
 static UInt16 Get16(const Byte *p, Bool be) { if (be) return (UInt16)GetBe16(p); return (UInt16)GetUi16(p); }
 static UInt32 Get32(const Byte *p, Bool be) { if (be) return GetBe32(p); return GetUi32(p); }
@@ -554,11 +554,11 @@ static int CompareEmptyItems(const unsigned *p1, const unsigned *p2, void *param
 }
 
 static const char *g_Exts =
-  " lzma 7z ace arc arj bz bz2 deb lzo lzx gz pak rpm sit tgz tbz tbz2 tgz cab ha lha lzh rar zoo"
+  " 7z xz lzma ace arc arj bz tbz bz2 tbz2 cab deb gz tgz ha lha lzh lzo lzx pak rar rpm sit zoo"
   " zip jar ear war msi"
   " 3gp avi mov mpeg mpg mpe wmv"
   " aac ape fla flac la mp3 m4a mp4 ofr ogg pac ra rm rka shn swa tta wv wma wav"
-  " swf "
+  " swf"
   " chm hxi hxs"
   " gif jpeg jpg jp2 png tiff  bmp ico psd psp"
   " awg ps eps cgm dxf svg vrml wmf emf ai md"
@@ -567,20 +567,23 @@ static const char *g_Exts =
   " iso bin nrg mdf img pdi tar cpio xpi"
   " vfd vhd vud vmc vsv"
   " vmdk dsk nvram vmem vmsd vmsn vmss vmtm"
-  " inl inc idl acf asa h hpp hxx c cpp cxx rc java cs pas bas vb cls ctl frm dlg def"
+  " inl inc idl acf asa"
+  " h hpp hxx c cpp cxx m mm go swift"
+  " rc java cs rs pas bas vb cls ctl frm dlg def"
   " f77 f f90 f95"
-  " asm sql manifest dep "
-  " mak clw csproj vcproj sln dsp dsw "
-  " class "
-  " bat cmd"
+  " asm s"
+  " sql manifest dep"
+  " mak clw csproj vcproj sln dsp dsw"
+  " class"
+  " bat cmd bash sh"
   " xml xsd xsl xslt hxk hxc htm html xhtml xht mht mhtml htw asp aspx css cgi jsp shtml"
-  " awk sed hta js php php3 php4 php5 phptml pl pm py pyo rb sh tcl vbs"
+  " awk sed hta js json php php3 php4 php5 phptml pl pm py pyo rb tcl ts vbs"
   " text txt tex ans asc srt reg ini doc docx mcw dot rtf hlp xls xlr xlt xlw ppt pdf"
   " sxc sxd sxi sxg sxw stc sti stw stm odt ott odg otg odp otp ods ots odf"
   " abw afp cwk lwp wpd wps wpt wrf wri"
   " abf afm bdf fon mgf otf pcf pfa snf ttf"
   " dbf mdb nsf ntf wdb db fdb gdb"
-  " exe dll ocx vbx sfx sys tlb awx com obj lib out o so "
+  " exe dll ocx vbx sfx sys tlb awx com obj lib out o so"
   " pdb pch idb ncb opt";
 
 static unsigned GetExtIndex(const char *ext)
@@ -2251,7 +2254,7 @@ HRESULT Update(
       continue;
     CRecordVector<CRefItem> refItems;
     refItems.ClearAndSetSize(numFiles);
-    bool sortByType = (numSolidFiles > 1);
+    bool sortByType = (options.UseTypeSorting && numSolidFiles > 1);
     for (i = 0; i < numFiles; i++)
       refItems[i] = CRefItem(group.Indices[i], updateItems[group.Indices[i]], sortByType);
     CSortParam sortParam;

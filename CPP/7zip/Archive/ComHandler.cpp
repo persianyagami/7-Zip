@@ -433,9 +433,9 @@ HRESULT CDatabase::Open(IInStream *inStream)
   SectorSizeBits = sectorSizeBits;
   MiniSectorSizeBits = miniSectorSizeBits;
 
-  if (sectorSizeBits > 28 ||
+  if (sectorSizeBits > 24 ||
       sectorSizeBits < 7 ||
-      miniSectorSizeBits > 28 ||
+      miniSectorSizeBits > 24 ||
       miniSectorSizeBits < 2 ||
       miniSectorSizeBits > sectorSizeBits)
     return S_FALSE;
@@ -571,6 +571,7 @@ HRESULT CDatabase::Open(IInStream *inStream)
   RINOK(AddNode(-1, root.SonDid));
   
   unsigned numCabs = 0;
+  
   FOR_VECTOR (i, Refs)
   {
     const CItem &item = Items[Refs[i].Did];
@@ -578,27 +579,31 @@ HRESULT CDatabase::Open(IInStream *inStream)
       continue;
     bool isMsiName;
     UString msiName = ConvertName(item.Name, isMsiName);
-    if (isMsiName)
+    if (isMsiName && !msiName.IsEmpty())
     {
+      bool isThereExt = (msiName.Find(L'.') >= 0);
+      bool isMsiSpec = (msiName[0] == k_Msi_SpecChar);
       if (msiName.Len() >= 4 && StringsAreEqualNoCase_Ascii(msiName.RightPtr(4), ".cab")
-          || msiName.Len() >= 3 && msiName[0] != k_Msi_SpecChar && StringsAreEqualNoCase_Ascii(msiName.RightPtr(3), "exe"))
+          || !isMsiSpec && msiName.Len() >= 3 && StringsAreEqualNoCase_Ascii(msiName.RightPtr(3), "exe")
+          || !isMsiSpec && !isThereExt)
       {
         numCabs++;
         MainSubfile = i;
       }
     }
   }
+  
   if (numCabs > 1)
     MainSubfile = -1;
 
   {
-    FOR_VECTOR(t, Items)
+    FOR_VECTOR (t, Items)
     {
       Update_PhySize_WithItem(t);
     }
   }
   {
-    FOR_VECTOR(t, Items)
+    FOR_VECTOR (t, Items)
     {
       const CItem &item = Items[t];
 
@@ -739,7 +744,7 @@ STDMETHODIMP CHandler::Extract(const UInt32 *indices, UInt32 numItems,
     return S_OK;
   UInt32 i;
   UInt64 totalSize = 0;
-  for(i = 0; i < numItems; i++)
+  for (i = 0; i < numItems; i++)
   {
     const CItem &item = _db.Items[_db.Refs[allFilesMode ? i : indices[i]].Did];
     if (!item.IsDir())

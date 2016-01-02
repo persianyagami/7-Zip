@@ -3,6 +3,10 @@
 #ifndef __PANEL_H
 #define __PANEL_H
 
+#include "../../../Common/MyWindows.h"
+
+#include <ShlObj.h>
+
 #include "../../../../C/Alloc.h"
 
 #include "../../../Common/Defs.h"
@@ -65,30 +69,66 @@ struct CPanelCallback
 
 void PanelCopyItems();
 
-struct CItemProperty
+
+struct CPropColumn
 {
-  UString Name;
+  int Order;
   PROPID ID;
   VARTYPE Type;
-  int Order;
   bool IsVisible;
   bool IsRawProp;
   UInt32 Width;
+  UString Name;
 
-  int Compare(const CItemProperty &a) const { return MyCompare(Order, a.Order); }
+  bool IsEqualTo(const CPropColumn &a) const
+  {
+    return Order == a.Order
+        && ID == a.ID
+        && Type == a.Type
+        && IsVisible == a.IsVisible
+        && IsRawProp == a.IsRawProp
+        && Width == a.Width
+        && Name == a.Name;
+  }
+
+  int Compare(const CPropColumn &a) const { return MyCompare(Order, a.Order); }
+
+  int Compare_NameFirst(const CPropColumn &a) const
+  {
+    if (ID == kpidName)
+    {
+      if (a.ID != kpidName)
+        return -1;
+    }
+    else if (a.ID == kpidName)
+      return 1;
+    return MyCompare(Order, a.Order);
+  }
 };
 
-class CItemProperties: public CObjectVector<CItemProperty>
+
+class CPropColumns: public CObjectVector<CPropColumn>
 {
 public:
-  int FindItemWithID(PROPID id)
+  int FindItem_for_PropID(PROPID id) const
   {
     FOR_VECTOR (i, (*this))
       if ((*this)[i].ID == id)
         return i;
     return -1;
   }
+
+  bool IsEqualTo(const CPropColumns &props) const
+  {
+    if (Size() != props.Size())
+      return false;
+    FOR_VECTOR (i, (*this))
+      if (!(*this)[i].IsEqualTo(props[i]))
+        return false;
+    return true;
+  }
 };
+
 
 struct CTempFileInfo
 {
@@ -280,8 +320,8 @@ private:
   void ChangeWindowSize(int xSize, int ySize);
  
   HRESULT InitColumns();
-  // void InitColumns2(PROPID sortID);
-  void InsertColumn(int index);
+  void DeleteColumn(unsigned index);
+  void AddColumn(const CPropColumn &prop);
 
   void SetFocusedSelectedItem(int index, bool select);
   HRESULT RefreshListCtrl(const UString &focusedName, int focusedPos, bool selectFocused,
@@ -347,6 +387,7 @@ public:
     */
     return (UInt32)item.lParam;
   }
+  
   int GetRealItemIndex(int indexInListView) const
   {
     /*
@@ -441,7 +482,6 @@ public:
   void SetFocusToLastRememberedItem();
 
 
-  void ReadListViewInfo();
   void SaveListViewInfo();
 
   CPanel() :
@@ -479,8 +519,9 @@ public:
   bool _needSaveInfo;
   UString _typeIDString;
   CListViewInfo _listViewInfo;
-  CItemProperties _properties;
-  CItemProperties _visibleProperties;
+  
+  CPropColumns _columns;
+  CPropColumns _visibleColumns;
   
   PROPID _sortID;
   // int _sortIndex;
@@ -686,26 +727,38 @@ public:
 
   void OpenAltStreams();
 
-  void OpenFocusedItemAsInternal();
+  void OpenFocusedItemAsInternal(const wchar_t *type = NULL);
   void OpenSelectedItems(bool internal);
 
   void OpenFolderExternal(int index);
 
   void OpenFolder(int index);
   HRESULT OpenParentArchiveFolder();
-  HRESULT OpenItemAsArchive(IInStream *inStream,
+  
+  HRESULT OpenAsArc(IInStream *inStream,
       const CTempFileInfo &tempFileInfo,
       const UString &virtualFilePath,
       const UString &arcFormat,
       bool &encrypted);
-  HRESULT OpenItemAsArchive(const UString &relPath, const UString &arcFormat, bool &encrypted);
-  HRESULT OpenItemAsArchive(int index);
+
+  HRESULT OpenAsArc_Msg(IInStream *inStream,
+      const CTempFileInfo &tempFileInfo,
+      const UString &virtualFilePath,
+      const UString &arcFormat,
+      bool &encrypted,
+      bool showErrorMessage);
+  
+  HRESULT OpenAsArc_Name(const UString &relPath, const UString &arcFormat, bool &encrypted, bool showErrorMessage);
+  HRESULT OpenAsArc_Index(int index, const wchar_t *type /* = NULL */, bool showErrorMessage);
+  
   void OpenItemInArchive(int index, bool tryInternal, bool tryExternal,
-      bool editMode, bool useEditor);
+      bool editMode, bool useEditor, const wchar_t *type = NULL);
+  
   HRESULT OnOpenItemChanged(UInt32 index, const wchar_t *fullFilePath, bool usePassword, const UString &password);
   LRESULT OnOpenItemChanged(LPARAM lParam);
 
-  void OpenItem(int index, bool tryInternal, bool tryExternal);
+  bool IsVirus_Message(const UString &name);
+  void OpenItem(int index, bool tryInternal, bool tryExternal, const wchar_t *type = NULL);
   void EditItem(bool useEditor);
   void EditItem(int index, bool useEditor);
 
@@ -787,5 +840,29 @@ public:
   }
   ~CMyBuffer() { ::MidFree(_data); }
 };
+
+class CExitEventLauncher
+{
+public:
+  NWindows::NSynchronization::CManualResetEvent _exitEvent;
+  bool _needExit;
+  CRecordVector< ::CThread > _threads;
+  unsigned _numActiveThreads;
+    
+  CExitEventLauncher()
+  {
+    _needExit = false;
+    if (_exitEvent.Create(false) != S_OK)
+      throw 9387173;
+    _needExit = true;
+    _numActiveThreads = 0;
+  };
+
+  ~CExitEventLauncher() { Exit(true); }
+
+  void Exit(bool hardExit);
+};
+
+extern CExitEventLauncher g_ExitEventLauncher;
 
 #endif

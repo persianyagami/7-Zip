@@ -57,7 +57,7 @@ public:
 HRESULT CThreadFolderOperations::ProcessVirt()
 {
   NCOM::CComInitializer comInitializer;
-  switch(OpType)
+  switch (OpType)
   {
     case FOLDER_TYPE_CREATE_FOLDER:
       Result = FolderOperations->CreateFolder(Name, UpdateCallback);
@@ -354,7 +354,7 @@ BOOL CPanel::OnEndLabelEdit(LV_DISPINFOW * lpnmh)
 
   _dontShowMode = true;
 
-  PostMessage(kReLoadMessage);
+  PostMsg(kReLoadMessage);
   return TRUE;
 }
 

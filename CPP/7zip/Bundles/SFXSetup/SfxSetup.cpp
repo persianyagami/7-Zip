@@ -2,6 +2,8 @@
 
 #include "StdAfx.h"
 
+#include "../../../Common/MyWindows.h"
+
 #include "../../../Common/MyInitGuid.h"
 
 #include "../../../Common/CommandLineParser.h"
@@ -279,7 +281,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE /* hPrevInstance */,
     execInfo.hProcess = 0;
     /* BOOL success = */ ::ShellExecuteEx(&execInfo);
     UINT32 result = (UINT32)(UINT_PTR)execInfo.hInstApp;
-    if(result <= 32)
+    if (result <= 32)
     {
       if (!assumeYes)
         ShowErrorMessage(L"Can not open file");

@@ -61,9 +61,12 @@ AR_OBJS = \
   $O\DeflateProps.obj \
   $O\DmgHandler.obj \
   $O\ElfHandler.obj \
+  $O\ExtHandler.obj \
   $O\FatHandler.obj \
   $O\FlvHandler.obj \
   $O\GzHandler.obj \
+  $O\GptHandler.obj \
+  $O\HandlerCont.obj \
   $O\HfsHandler.obj \
   $O\IhexHandler.obj \
   $O\LzhHandler.obj \
@@ -75,19 +78,21 @@ AR_OBJS = \
   $O\NtfsHandler.obj \
   $O\PeHandler.obj \
   $O\PpmdHandler.obj \
+  $O\QcowHandler.obj \
   $O\RpmHandler.obj \
   $O\SplitHandler.obj \
   $O\SquashfsHandler.obj \
   $O\SwfHandler.obj \
   $O\UefiHandler.obj \
+  $O\VdiHandler.obj \
   $O\VhdHandler.obj \
+  $O\VmdkHandler.obj \
   $O\XarHandler.obj \
   $O\XzHandler.obj \
   $O\ZHandler.obj \
 
 AR_COMMON_OBJS = \
   $O\CoderMixer2.obj \
-  $O\CrossThreadProgress.obj \
   $O\DummyOutStream.obj \
   $O\FindSignature.obj \
   $O\InStreamWithCRC.obj \
@@ -105,7 +110,6 @@ AR_COMMON_OBJS = \
   $O\7zEncode.obj \
   $O\7zExtract.obj \
   $O\7zFolderInStream.obj \
-  $O\7zFolderOutStream.obj \
   $O\7zHandler.obj \
   $O\7zHandlerOut.obj \
   $O\7zHeader.obj \
@@ -141,6 +145,7 @@ NSIS_OBJS = \
 
 RAR_OBJS = \
   $O\RarHandler.obj \
+  $O\Rar5Handler.obj \
 
 TAR_OBJS = \
   $O\TarHandler.obj \
@@ -200,8 +205,8 @@ COMPRESS_OBJS = \
   $O\LzmaDecoder.obj \
   $O\LzmaEncoder.obj \
   $O\LzmaRegister.obj \
+  $O\LzmsDecoder.obj \
   $O\LzOutWindow.obj \
-  $O\Lzx86Converter.obj \
   $O\LzxDecoder.obj \
   $O\PpmdDecoder.obj \
   $O\PpmdEncoder.obj \
@@ -212,21 +217,25 @@ COMPRESS_OBJS = \
   $O\Rar2Decoder.obj \
   $O\Rar3Decoder.obj \
   $O\Rar3Vm.obj \
+  $O\Rar5Decoder.obj \
   $O\RarCodecsRegister.obj \
   $O\ShrinkDecoder.obj \
   $O\ZlibDecoder.obj \
   $O\ZlibEncoder.obj \
   $O\ZDecoder.obj \
+  $O\XPressDecoder.obj \
 
 CRYPTO_OBJS = \
   $O\7zAes.obj \
   $O\7zAesRegister.obj \
   $O\HmacSha1.obj \
+  $O\HmacSha256.obj \
   $O\MyAes.obj \
   $O\MyAesReg.obj \
   $O\Pbkdf2HmacSha1.obj \
   $O\RandGen.obj \
   $O\Rar20Crypto.obj \
+  $O\Rar5Aes.obj \
   $O\RarAes.obj \
   $O\WzAes.obj \
   $O\ZipCrypto.obj \
@@ -239,6 +248,7 @@ C_OBJS = \
   $O\Alloc.obj \
   $O\Bcj2.obj \
   $O\Bcj2Enc.obj \
+  $O\Blake2s.obj \
   $O\Bra.obj \
   $O\Bra86.obj \
   $O\BraIA64.obj \
