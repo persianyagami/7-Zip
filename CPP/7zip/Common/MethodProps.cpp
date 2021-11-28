@@ -99,41 +99,65 @@ HRESULT ParseMtProp(const UString &name, const PROPVARIANT &prop, UInt32 default
 }
 
 
+static HRESULT SetLogSizeProp(UInt64 number, NCOM::CPropVariant &destProp)
+{
+  if (number >= 64)
+    return E_INVALIDARG;
+  UInt32 val32;
+  if (number < 32)
+    val32 = (UInt32)1 << (unsigned)number;
+  /*
+  else if (number == 32 && reduce_4GB_to_32bits)
+    val32 = (UInt32)(Int32)-1;
+  */
+  else
+  {
+    destProp = (UInt64)((UInt64)1 << (unsigned)number);
+    return S_OK;
+  }
+  destProp = (UInt32)val32;
+  return S_OK;
+}
+
+
 static HRESULT StringToDictSize(const UString &s, NCOM::CPropVariant &destProp)
 {
+  /* if (reduce_4GB_to_32bits) we can reduce (4 GiB) property to (4 GiB - 1).
+     to fit the value to UInt32 for clients that do not support 64-bit values */
+
   const wchar_t *end;
-  UInt32 number = ConvertStringToUInt32(s, &end);
-  unsigned numDigits = (unsigned)(end - s.Ptr());
+  const UInt64 number = ConvertStringToUInt64(s, &end);
+  const unsigned numDigits = (unsigned)(end - s.Ptr());
   if (numDigits == 0 || s.Len() > numDigits + 1)
     return E_INVALIDARG;
   
   if (s.Len() == numDigits)
-  {
-    if (number >= 64)
-      return E_INVALIDARG;
-    if (number < 32)
-      destProp = (UInt32)((UInt32)1 << (unsigned)number);
-    else
-      destProp = (UInt64)((UInt64)1 << (unsigned)number);
-    return S_OK;
-  }
+    return SetLogSizeProp(number, destProp);
   
   unsigned numBits;
   
   switch (MyCharLower_Ascii(s[numDigits]))
   {
-    case 'b': destProp = number; return S_OK;
+    case 'b': numBits =  0; break;
     case 'k': numBits = 10; break;
     case 'm': numBits = 20; break;
     case 'g': numBits = 30; break;
     default: return E_INVALIDARG;
   }
   
-  if (number < ((UInt32)1 << (32 - numBits)))
-    destProp = (UInt32)(number << numBits);
+  const UInt64 range4g = ((UInt64)1 << (32 - numBits));
+  if (number < range4g)
+    destProp = (UInt32)((UInt32)number << numBits);
+  /*
+  else if (number == range4g && reduce_4GB_to_32bits)
+    destProp = (UInt32)(Int32)-1;
+  */
+  else if (numBits == 0)
+    destProp = (UInt64)number;
+  else if (number >= ((UInt64)1 << (64 - numBits)))
+    return E_INVALIDARG;
   else
     destProp = (UInt64)((UInt64)number << numBits);
-  
   return S_OK;
 }
 
@@ -141,16 +165,8 @@ static HRESULT StringToDictSize(const UString &s, NCOM::CPropVariant &destProp)
 static HRESULT PROPVARIANT_to_DictSize(const PROPVARIANT &prop, NCOM::CPropVariant &destProp)
 {
   if (prop.vt == VT_UI4)
-  {
-    UInt32 v = prop.ulVal;
-    if (v >= 64)
-      return E_INVALIDARG;
-    if (v < 32)
-      destProp = (UInt32)((UInt32)1 << (unsigned)v);
-    else
-      destProp = (UInt64)((UInt64)1 << (unsigned)v);
-    return S_OK;
-  }
+    return SetLogSizeProp(prop.ulVal, destProp);
+
   if (prop.vt == VT_BSTR)
   {
     UString s;
@@ -184,10 +200,12 @@ class CCoderProps
   unsigned _numProps;
   unsigned _numPropsMax;
 public:
-  CCoderProps(unsigned numPropsMax)
+  CCoderProps(unsigned numPropsMax):
+      _propIDs(NULL),
+      _props(NULL),
+      _numProps(0),
+      _numPropsMax(numPropsMax)
   {
-    _numPropsMax = numPropsMax;
-    _numProps = 0;
     _propIDs = new PROPID[numPropsMax];
     _props = new NCOM::CPropVariant[numPropsMax];
   }
@@ -214,7 +232,15 @@ void CCoderProps::AddProp(const CProp &prop)
 
 HRESULT CProps::SetCoderProps(ICompressSetCoderProperties *scp, const UInt64 *dataSizeReduce) const
 {
-  CCoderProps coderProps(Props.Size() + (dataSizeReduce ? 1 : 0));
+  return SetCoderProps_DSReduce_Aff(scp, dataSizeReduce, NULL);
+}
+
+HRESULT CProps::SetCoderProps_DSReduce_Aff(
+    ICompressSetCoderProperties *scp,
+    const UInt64 *dataSizeReduce,
+    const UInt64 *affinity) const
+{
+  CCoderProps coderProps(Props.Size() + (dataSizeReduce ? 1 : 0) + (affinity ? 1 : 0) );
   FOR_VECTOR (i, Props)
     coderProps.AddProp(Props[i]);
   if (dataSizeReduce)
@@ -224,27 +250,34 @@ HRESULT CProps::SetCoderProps(ICompressSetCoderProperties *scp, const UInt64 *da
     prop.Value = *dataSizeReduce;
     coderProps.AddProp(prop);
   }
+  if (affinity)
+  {
+    CProp prop;
+    prop.Id = NCoderPropID::kAffinity;
+    prop.Value = *affinity;
+    coderProps.AddProp(prop);
+  }
   return coderProps.SetProps(scp);
 }
 
 
 int CMethodProps::FindProp(PROPID id) const
 {
-  for (int i = Props.Size() - 1; i >= 0; i--)
-    if (Props[i].Id == id)
+  for (int i = (int)Props.Size() - 1; i >= 0; i--)
+    if (Props[(unsigned)i].Id == id)
       return i;
   return -1;
 }
 
-int CMethodProps::GetLevel() const
+unsigned CMethodProps::GetLevel() const
 {
   int i = FindProp(NCoderPropID::kLevel);
   if (i < 0)
     return 5;
-  if (Props[i].Value.vt != VT_UI4)
+  if (Props[(unsigned)i].Value.vt != VT_UI4)
     return 9;
-  UInt32 level = Props[i].Value.ulVal;
-  return level > 9 ? 9 : (int)level;
+  UInt32 level = Props[(unsigned)i].Value.ulVal;
+  return level > 9 ? 9 : (unsigned)level;
 }
 
 struct CNameToPropID
@@ -286,7 +319,7 @@ static int FindPropIdExact(const UString &name)
 {
   for (unsigned i = 0; i < ARRAY_SIZE(g_NameToPropID); i++)
     if (StringsAreEqualNoCase_Ascii(name, g_NameToPropID[i].Name))
-      return i;
+      return (int)i;
   return -1;
 }
 
@@ -346,8 +379,8 @@ static void SplitParam(const UString &param, UString &name, UString &value)
   int eqPos = param.Find(L'=');
   if (eqPos >= 0)
   {
-    name.SetFrom(param, eqPos);
-    value = param.Ptr(eqPos + 1);
+    name.SetFrom(param, (unsigned)eqPos);
+    value = param.Ptr((unsigned)(eqPos + 1));
     return;
   }
   unsigned i;
@@ -382,7 +415,7 @@ HRESULT CMethodProps::SetParam(const UString &name, const UString &value)
     return E_INVALIDARG;
   const CNameToPropID &nameToPropID = g_NameToPropID[(unsigned)index];
   CProp prop;
-  prop.Id = index;
+  prop.Id = (unsigned)index;
 
   if (IsLogSizeProp(prop.Id))
   {
@@ -463,7 +496,7 @@ HRESULT CMethodProps::ParseParamsFromPROPVARIANT(const UString &realName, const 
     return E_INVALIDARG;
   const CNameToPropID &nameToPropID = g_NameToPropID[(unsigned)index];
   CProp prop;
-  prop.Id = index;
+  prop.Id = (unsigned)index;
   
   if (IsLogSizeProp(prop.Id))
   {
@@ -485,14 +518,14 @@ HRESULT COneMethodInfo::ParseMethodFromString(const UString &s)
   {
     UString temp = s;
     if (splitPos >= 0)
-      temp.DeleteFrom(splitPos);
+      temp.DeleteFrom((unsigned)splitPos);
     if (!temp.IsAscii())
       return E_INVALIDARG;
     MethodName.SetFromWStr_if_Ascii(temp);
   }
   if (splitPos < 0)
     return S_OK;
-  PropsString = s.Ptr(splitPos + 1);
+  PropsString = s.Ptr((unsigned)(splitPos + 1));
   return ParseParamsFromString(PropsString);
 }
 

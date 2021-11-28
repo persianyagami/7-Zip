@@ -83,6 +83,8 @@ static const unsigned kHistorySize = 20;
 static const UInt32 kNoSolidBlockSize = 0;
 static const UInt32 kSolidBlockSize = 64;
 
+static const UInt32 kLzmaMaxDictSize = (UInt32)15 << 28;
+
 static LPCSTR const kExeExt = ".exe";
 
 #define k7zFormat "7z"
@@ -248,24 +250,26 @@ static const CFormatInfo g_Formats[] =
 
 static bool IsMethodSupportedBySfx(int methodID)
 {
-  for (int i = 0; i < ARRAY_SIZE(g_7zSfxMethods); i++)
+  for (unsigned i = 0; i < ARRAY_SIZE(g_7zSfxMethods); i++)
     if (methodID == g_7zSfxMethods[i])
       return true;
   return false;
 }
 
-static bool GetMaxRamSizeForProgram(UInt64 &physSize)
+static bool GetMaxRamSizeForProgram(UInt64 &ramSize, UInt64 &size)
 {
-  physSize = (UInt64)(sizeof(size_t)) << 29;
-  bool ramSize_Defined = NSystem::GetRamSize(physSize);
+  size = (UInt64)(sizeof(size_t)) << 29;
+  bool ramSize_Defined = NSystem::GetRamSize(size);
+  ramSize = size;
+  size = size / 16 * 15;
   const UInt64 kMinSysSize = (1 << 24);
-  if (physSize <= kMinSysSize)
-    physSize = 0;
+  if (size <= kMinSysSize)
+    size = 0;
   else
-    physSize -= kMinSysSize;
+    size -= kMinSysSize;
   const UInt64 kMinUseSize = (1 << 24);
-  if (physSize < kMinUseSize)
-    physSize = kMinUseSize;
+  if (size < kMinUseSize)
+    size = kMinUseSize;
   return ramSize_Defined;
 }
 
@@ -336,6 +340,7 @@ bool CCompressDialog::OnInit()
   _password1Control.SetText(Info.Password);
   _password2Control.SetText(Info.Password);
   _encryptionMethod.Attach(GetItem(IDC_COMPRESS_ENCRYPTION_METHOD));
+  _default_encryptionMethod_Index = -1;
 
   m_ArchivePath.Attach(GetItem(IDC_COMPRESS_ARCHIVE));
   m_Format.Attach(GetItem(IDC_COMPRESS_FORMAT));
@@ -410,7 +415,7 @@ bool CCompressDialog::OnInit()
   SetSolidBlockSize();
   SetNumThreads();
 
-  TCHAR s[40] = { TEXT('/'), TEXT(' '), 0 };
+  TCHAR s[32] = { TEXT('/'), TEXT(' '), 0 };
   ConvertUInt32ToString(NSystem::GetNumberOfProcessors(), s + 2);
   SetItemText(IDT_COMPRESS_HARDWARE_THREADS, s);
 
@@ -686,6 +691,48 @@ static bool IsAsciiString(const UString &s)
   return true;
 }
 
+
+static void AddSize_MB(UString &s, UInt64 size)
+{
+  char temp[32];
+  ConvertUInt64ToString((size + (1 << 20) - 1) >> 20, temp);
+  s += temp;
+  s += " MB";
+}
+
+
+void SetErrorMessage_MemUsage(UString &s, UInt64 reqSize, UInt64 ramSize, UInt64 ramLimit, const UString &usageString)
+{
+  s += "The operation was blocked by 7-Zip";
+  s.Add_LF();
+  s += "The operation can require big amount of RAM (memory):";
+  s.Add_LF();
+  s.Add_LF();
+  AddSize_MB(s, reqSize);
+
+  if (!usageString.IsEmpty())
+  {
+    s += " : ";
+    s += usageString;
+  }
+
+  s.Add_LF();
+  AddSize_MB(s, ramSize);
+  s += " : RAM";
+
+  if (ramLimit != 0)
+  {
+    s.Add_LF();
+    AddSize_MB(s, ramLimit);
+    s += " : 7-Zip limit";
+  }
+  
+  s.Add_LF();
+  s.Add_LF();
+  s += LangString(IDS_MEM_ERROR);
+}
+
+
 void CCompressDialog::OnOK()
 {
   _password1Control.GetText(Info.Password);
@@ -717,6 +764,24 @@ void CCompressDialog::OnOK()
     }
   }
 
+  {
+    UInt64 ramSize;
+    UInt64 maxRamSize;
+    const bool maxRamSize_Defined = GetMaxRamSizeForProgram(ramSize, maxRamSize);
+    UInt64 decompressMem;
+    const UInt64 memUsage = GetMemoryUsage_DecompMem(decompressMem);
+    if (maxRamSize_Defined && memUsage > maxRamSize)
+    {
+      UString s;
+      UString s2 = LangString(IDT_COMPRESS_MEMORY);
+      if (s2.IsEmpty())
+        GetItemText(IDT_COMPRESS_MEMORY, s2);
+      SetErrorMessage_MemUsage(s, memUsage, ramSize, maxRamSize, s2);
+      MessageBoxError(s);
+      return;
+    }
+  }
+
   SaveOptionsInMem();
   {
     UString s;
@@ -735,7 +800,7 @@ void CCompressDialog::OnOK()
   Info.PathMode = (NWildcard::ECensorPathMode)k_PathMode_Vals[m_PathMode.GetCurSel()];
 
   Info.Level = GetLevelSpec();
-  Info.Dictionary = GetDictionarySpec();
+  Info.Dict64 = GetDictSpec();
   Info.Order = GetOrderSpec();
   Info.OrderMode = GetOrderMode();
   Info.NumThreads = GetNumThreadsSpec();
@@ -1150,11 +1215,13 @@ bool CCompressDialog::IsXzFormat()
 void CCompressDialog::SetEncryptionMethod()
 {
   _encryptionMethod.ResetContent();
+  _default_encryptionMethod_Index = -1;
   const CArcInfoEx &ai = (*ArcFormats)[GetFormatIndex()];
   if (ai.Name.IsEqualTo_Ascii_NoCase("7z"))
   {
     ComboBox_AddStringAscii(_encryptionMethod, "AES-256");
     _encryptionMethod.SetCurSel(0);
+    _default_encryptionMethod_Index = 0;
   }
   else if (ai.Name.IsEqualTo_Ascii_NoCase("zip"))
   {
@@ -1165,9 +1232,15 @@ void CCompressDialog::SetEncryptionMethod()
       const NCompression::CFormatOptions &fo = m_RegistryInfo.Formats[index];
       encryptionMethod = fo.EncryptionMethod;
     }
-    ComboBox_AddStringAscii(_encryptionMethod, "ZipCrypto");
+    int sel = 0;
+    // if (ZipCryptoIsAllowed)
+    {
+      ComboBox_AddStringAscii(_encryptionMethod, "ZipCrypto");
+      sel = (encryptionMethod.IsPrefixedBy_Ascii_NoCase("aes") ? 1 : 0);
+      _default_encryptionMethod_Index = 0;
+    }
     ComboBox_AddStringAscii(_encryptionMethod, "AES-256");
-    _encryptionMethod.SetCurSel(encryptionMethod.IsPrefixedBy_Ascii_NoCase("aes") ? 1 : 0);
+    _encryptionMethod.SetCurSel(sel);
   }
 }
 
@@ -1189,8 +1262,8 @@ UString CCompressDialog::GetMethodSpec()
 UString CCompressDialog::GetEncryptionMethodSpec()
 {
   UString s;
-  if (_encryptionMethod.GetCount() > 1
-      && _encryptionMethod.GetCurSel() > 0)
+  if (_encryptionMethod.GetCount() > 0
+      && _encryptionMethod.GetCurSel() != _default_encryptionMethod_Index)
   {
     _encryptionMethod.GetText(s);
     s.RemoveChar(L'-');
@@ -1198,29 +1271,37 @@ UString CCompressDialog::GetEncryptionMethodSpec()
   return s;
 }
 
-void CCompressDialog::AddDictionarySize(UInt32 size)
+
+void CCompressDialog::AddDict2(size_t sizeReal, size_t sizeShow)
 {
   Byte c = 0;
   unsigned moveBits = 0;
-  if ((size & 0xFFFFF) == 0)    { moveBits = 20; c = 'M'; }
-  else if ((size & 0x3FF) == 0) { moveBits = 10; c = 'K'; }
-  TCHAR s[40];
-  ConvertUInt32ToString(size >> moveBits, s);
+  if ((sizeShow & 0xFFFFF) == 0)    { moveBits = 20; c = 'M'; }
+  else if ((sizeShow & 0x3FF) == 0) { moveBits = 10; c = 'K'; }
+  TCHAR s[32];
+  ConvertUInt64ToString(sizeShow >> moveBits, s);
   unsigned pos = MyStringLen(s);
   s[pos++] = ' ';
   if (moveBits != 0)
     s[pos++] = c;
   s[pos++] = 'B';
   s[pos++] = 0;
-  int index = (int)m_Dictionary.AddString(s);
-  m_Dictionary.SetItemData(index, size);
+  const int index = (int)m_Dictionary.AddString(s);
+  m_Dictionary.SetItemData(index, sizeReal);
 }
+
+
+void CCompressDialog::AddDict(size_t size)
+{
+  AddDict2(size, size);
+}
+
 
 void CCompressDialog::SetDictionary()
 {
   m_Dictionary.ResetContent();
   const CArcInfoEx &ai = (*ArcFormats)[GetFormatIndex()];
-  int index = FindRegistryFormat(ai.Name);
+  const int index = FindRegistryFormat(ai.Name);
   UInt32 defaultDict = (UInt32)(Int32)-1;
   
   if (index >= 0)
@@ -1230,54 +1311,60 @@ void CCompressDialog::SetDictionary()
       defaultDict = fo.Dictionary;
   }
   
-  int methodID = GetMethodID();
-  UInt32 level = GetLevel2();
+  const int methodID = GetMethodID();
+  const UInt32 level = GetLevel2();
   if (methodID < 0)
     return;
+  UInt64 ramSize;
   UInt64 maxRamSize;
-  bool maxRamSize_Defined = GetMaxRamSizeForProgram(maxRamSize);
+  const bool maxRamSize_Defined = GetMaxRamSizeForProgram(ramSize, maxRamSize);
   
   switch (methodID)
   {
     case kLZMA:
     case kLZMA2:
     {
-      static const UInt32 kMinDicSize = (1 << 16);
       if (defaultDict == (UInt32)(Int32)-1)
       {
-             if (level >= 9) defaultDict = (1 << 26);
-        else if (level >= 7) defaultDict = (1 << 25);
-        else if (level >= 5) defaultDict = (1 << 24);
-        else if (level >= 3) defaultDict = (1 << 20);
-        else                 defaultDict = (kMinDicSize);
+        defaultDict =
+            ( level <= 3 ? ((UInt32)1 << (level * 2 + 16)) :
+            ( level <= 6 ? ((UInt32)1 << (level + 19)) :
+            ( level <= 7 ? ((UInt32)1 << 25) : ((UInt32)1 << 26)
+            )));
+      }
+
+      // we use threshold 3.75 GiB to switch to kLzmaMaxDictSize.
+      if (defaultDict >= ((UInt32)15 << 28))
+        defaultDict = kLzmaMaxDictSize;
+      
+      const size_t kLzmaMaxDictSize_Up = (size_t)1 << (20 + sizeof(size_t) / 4 * 6);
+      
+      int curSel = 0;
+
+      for (unsigned i = (16 - 1) * 2; i <= (32 - 1) * 2; i++)
+      {
+        if (i < (20 - 1) * 2
+            && i != (16 - 1) * 2
+            && i != (18 - 1) * 2)
+          continue;
+        if (i == (20 - 1) * 2 + 1)
+          continue;
+        const size_t dict_up = (size_t)(2 + (i & 1)) << (i / 2);
+        size_t dict = dict_up;
+        if (dict_up >= kLzmaMaxDictSize)
+          dict = kLzmaMaxDictSize; // we reduce dictionary
+        
+        AddDict(dict);
+        // AddDict2(dict, dict_up); // for debug : we show 4 GB
+
+        const UInt64 memUsage = GetMemoryUsageComp_Dict(dict);
+        if (dict <= defaultDict && (!maxRamSize_Defined || memUsage <= maxRamSize))
+          curSel = m_Dictionary.GetCount() - 1;
+        if (dict_up >= kLzmaMaxDictSize_Up)
+          break;
       }
       
-      AddDictionarySize(kMinDicSize);
-      m_Dictionary.SetCurSel(0);
-      
-      for (unsigned i = 20; i <= 31; i++)
-        for (unsigned j = 0; j < 2; j++)
-        {
-          if (i == 20 && j > 0)
-            continue;
-          UInt32 dict = ((UInt32)(2 + j) << (i - 1));
-          
-          if (dict >
-            #ifdef MY_CPU_64BIT
-              (3 << 29)
-            #else
-              (1 << 26)
-            #endif
-            )
-            continue;
-          
-          AddDictionarySize(dict);
-          UInt64 decomprSize;
-          UInt64 requiredComprSize = GetMemoryUsage(dict, decomprSize);
-          if (dict <= defaultDict && (!maxRamSize_Defined || requiredComprSize <= maxRamSize))
-            m_Dictionary.SetCurSel(m_Dictionary.GetCount() - 1);
-        }
-
+      m_Dictionary.SetCurSel(curSel);
       // SetNearestSelectComboBox(m_Dictionary, defaultDict);
       break;
     }
@@ -1285,49 +1372,63 @@ void CCompressDialog::SetDictionary()
     case kPPMd:
     {
       if (defaultDict == (UInt32)(Int32)-1)
-      {
-             if (level >= 9) defaultDict = (192 << 20);
-        else if (level >= 7) defaultDict = ( 64 << 20);
-        else if (level >= 5) defaultDict = ( 16 << 20);
-        else                 defaultDict = (  4 << 20);
-      }
+        defaultDict = (UInt32)1 << (level + 19);
 
-      for (unsigned i = 20; i < 31; i++)
-        for (unsigned j = 0; j < 2; j++)
-        {
-          if (i == 20 && j > 0)
-            continue;
-          UInt32 dict = ((UInt32)(2 + j) << (i - 1));
-          if (dict >
-            #ifdef MY_CPU_64BIT
-              (1 << 30)
-            #else
-              (1 << 29)
-            #endif
-            )
-            continue;
-          AddDictionarySize(dict);
-          UInt64 decomprSize;
-          UInt64 requiredComprSize = GetMemoryUsage(dict, decomprSize);
-          if ((dict <= defaultDict && (!maxRamSize_Defined || requiredComprSize <= maxRamSize))
-              || m_Dictionary.GetCount() == 1)
-            m_Dictionary.SetCurSel(m_Dictionary.GetCount() - 1);
-        }
+      const UInt32 kPpmd_Default_4g = (UInt32)0 - ((UInt32)1 << 10);
+      const size_t kPpmd_MaxDictSize_Up = (size_t)1 << (29 + sizeof(size_t) / 8);
+
+      if (defaultDict >= ((UInt32)15 << 28)) // threshold
+        defaultDict = kPpmd_Default_4g;
+
+      int curSel = 0;
+      for (unsigned i = (20 - 1) * 2; i <= (32 - 1) * 2; i++)
+      {
+        if (i == (20 - 1) * 2 + 1)
+          continue;
+
+        const size_t dict_up = (size_t)(2 + (i & 1)) << (i / 2);
+        size_t dict = dict_up;
+        if (dict_up >= kPpmd_Default_4g)
+          dict = kPpmd_Default_4g;
+
+        AddDict2(dict, dict_up);
+        // AddDict2((UInt32)((UInt32)0 - 2), dict_up); // for debug
+        // AddDict(dict_up); // for debug
+        const UInt64 memUsage = GetMemoryUsageComp_Dict(dict);
+        if (dict <= defaultDict && (!maxRamSize_Defined || memUsage <= maxRamSize))
+          curSel = m_Dictionary.GetCount() - 1;
+        if (dict_up >= kPpmd_MaxDictSize_Up)
+          break;
+      }
+      m_Dictionary.SetCurSel(curSel);
+      // SetNearestSelectComboBox(m_Dictionary, defaultDict);
+      break;
+    }
+
+    case kPPMdZip:
+    {
+      if (defaultDict == (UInt32)(Int32)-1)
+        defaultDict = (UInt32)1 << (level + 19);
       
+      int curSel = 0;
+      for (unsigned i = 20; i <= 28; i++)
+      {
+        const UInt32 dict = (UInt32)1 << i;
+        AddDict(dict);
+        const UInt64 memUsage = GetMemoryUsageComp_Dict(dict);
+        if ((dict <= defaultDict && (!maxRamSize_Defined || memUsage <= maxRamSize)))
+          curSel = m_Dictionary.GetCount() - 1;
+      }
+      m_Dictionary.SetCurSel(curSel);
       // SetNearestSelectComboBox(m_Dictionary, defaultDict);
       break;
     }
 
     case kDeflate:
-    {
-      AddDictionarySize(32 << 10);
-      m_Dictionary.SetCurSel(0);
-      break;
-    }
-    
     case kDeflate64:
     {
-      AddDictionarySize(64 << 10);
+      const UInt32 dict = (methodID == kDeflate ? (UInt32)(1 << 15) : (UInt32)(1 << 16));
+      AddDict(dict);
       m_Dictionary.SetCurSel(0);
       break;
     }
@@ -1341,44 +1442,36 @@ void CCompressDialog::SetDictionary()
         else                 defaultDict = (100 << 10);
       }
       
+      int curSel = 0;
       for (unsigned i = 1; i <= 9; i++)
       {
-        UInt32 dict = ((UInt32)i * 100) << 10;
-        AddDictionarySize(dict);
-        if (dict <= defaultDict || m_Dictionary.GetCount() == 0)
-          m_Dictionary.SetCurSel(m_Dictionary.GetCount() - 1);
+        const UInt32 dict = ((UInt32)i * 100) << 10;
+        AddDict(dict);
+        // AddDict2(i * 100000, dict);
+        if (i <= defaultDict / 100000)
+          curSel = m_Dictionary.GetCount() - 1;
       }
-      
-      break;
-    }
-    
-    case kPPMdZip:
-    {
-      if (defaultDict == (UInt32)(Int32)-1)
-        defaultDict = (1 << (19 + (level > 8 ? 8 : level)));
-      
-      for (unsigned i = 20; i <= 28; i++)
-      {
-        UInt32 dict = (1 << i);
-        AddDictionarySize(dict);
-        UInt64 decomprSize;
-        UInt64 requiredComprSize = GetMemoryUsage(dict, decomprSize);
-        if ((dict <= defaultDict && (!maxRamSize_Defined || requiredComprSize <= maxRamSize))
-            || m_Dictionary.GetCount() == 1)
-          m_Dictionary.SetCurSel(m_Dictionary.GetCount() - 1);
-      }
-      
-      // SetNearestSelectComboBox(m_Dictionary, defaultDict);
+      m_Dictionary.SetCurSel(curSel);
       break;
     }
   }
 }
+
 
 UInt32 CCompressDialog::GetComboValue(NWindows::NControl::CComboBox &c, int defMax)
 {
   if (c.GetCount() <= defMax)
     return (UInt32)(Int32)-1;
   return (UInt32)c.GetItemData_of_CurSel();
+}
+
+
+UInt64 CCompressDialog::GetComboValue_64(NWindows::NControl::CComboBox &c, int defMax)
+{
+  if (c.GetCount() <= defMax)
+    return (UInt64)(Int64)-1;
+  // LRESULT is signed. so we cast it to unsigned size_t at first:
+  return (UInt64)(size_t)c.GetItemData_of_CurSel();
 }
 
 UInt32 CCompressDialog::GetLevel2()
@@ -1391,7 +1484,7 @@ UInt32 CCompressDialog::GetLevel2()
 
 int CCompressDialog::AddOrder(UInt32 size)
 {
-  TCHAR s[40];
+  TCHAR s[32];
   ConvertUInt32ToString(size, s);
   int index = (int)m_Order.AddString(s);
   m_Order.SetItemData(index, size);
@@ -1512,6 +1605,21 @@ bool CCompressDialog::GetOrderMode()
 }
 
 
+static UInt64 Get_Lzma2_ChunkSize(UInt64 dict)
+{
+  // we use same default chunk sizes as defined in 7z encoder and lzma2 encoder
+  UInt64 cs = (UInt64)dict << 2;
+  const UInt32 kMinSize = (UInt32)1 << 20;
+  const UInt32 kMaxSize = (UInt32)1 << 28;
+  if (cs < kMinSize) cs = kMinSize;
+  if (cs > kMaxSize) cs = kMaxSize;
+  if (cs < dict) cs = dict;
+  cs += (kMinSize - 1);
+  cs &= ~(UInt64)(kMinSize - 1);
+  return cs;
+}
+
+
 void CCompressDialog::SetSolidBlockSize(bool useDictionary)
 {
   m_Solid.ResetContent();
@@ -1523,8 +1631,8 @@ void CCompressDialog::SetSolidBlockSize(bool useDictionary)
   if (level == 0)
     return;
 
-  UInt32 dict = GetDictionarySpec();
-  if (dict == (UInt32)(Int32)-1)
+  UInt64 dict = GetDictSpec();
+  if (dict == (UInt64)(Int64)-1)
     dict = 1;
 
   UInt32 defaultBlockSize = (UInt32)(Int32)-1;
@@ -1556,24 +1664,26 @@ void CCompressDialog::SetSolidBlockSize(bool useDictionary)
       m_Solid.SetCurSel(0);
   }
   
-  UInt64 blockSize;
+  const UInt64 cs = Get_Lzma2_ChunkSize(dict);
+
+  // Solid Block Size
+  UInt64 blockSize = cs; // for xz
 
   if (is7z)
   {
-    blockSize = (UInt64)dict << 7;
+    // we use same default block sizes as defined in 7z encoder
+    UInt64 kMaxSize = (UInt64)1 << 32;
+    if (GetMethodID() == kLZMA2)
+    {
+      blockSize = cs << 6;
+      kMaxSize = (UInt64)1 << 34;
+    }
+    else
+      blockSize = (UInt64)dict << 7;
+
     const UInt32 kMinSize = (UInt32)1 << 24;
-    const UInt64 kMaxSize = (UInt64)1 << 32;
     if (blockSize < kMinSize) blockSize = kMinSize;
     if (blockSize > kMaxSize) blockSize = kMaxSize;
-  }
-  else
-  {
-    blockSize = (UInt64)dict << 2;
-    const UInt32 kMinSize = (UInt32)1 << 20;
-    const UInt32 kMaxSize = (UInt32)1 << 28;
-    if (blockSize < kMinSize) blockSize = kMinSize;
-    if (blockSize > kMaxSize) blockSize = kMaxSize;
-    if (blockSize < dict) blockSize = dict;
   }
   
   for (unsigned i = 20; i <= 36; i++)
@@ -1581,7 +1691,7 @@ void CCompressDialog::SetSolidBlockSize(bool useDictionary)
     if (defaultBlockSize == (UInt32)(Int32)-1 && ((UInt64)1 << i) >= blockSize)
       defaultBlockSize = i;
 
-    TCHAR s[40];
+    TCHAR s[32];
     char post;
     ConvertUInt32ToString(1 << (i % 10), s);
          if (i < 20) post = 'K';
@@ -1616,6 +1726,8 @@ void CCompressDialog::SetNumThreads()
     return;
 
   UInt32 numHardwareThreads = NSystem::GetNumberOfProcessors();
+  // numHardwareThreads = 64;
+
   UInt32 defaultValue = numHardwareThreads;
 
   {
@@ -1634,14 +1746,14 @@ void CCompressDialog::SetNumThreads()
   switch (methodID)
   {
     case kLZMA: numAlgoThreadsMax = 2; break;
-    case kLZMA2: numAlgoThreadsMax = 32; break;
+    case kLZMA2: numAlgoThreadsMax = 256; break;
     case kBZip2: numAlgoThreadsMax = 32; break;
   }
   if (IsZipFormat())
     numAlgoThreadsMax = 128;
   for (UInt32 i = 1; i <= numHardwareThreads * 2 && i <= numAlgoThreadsMax; i++)
   {
-    TCHAR s[40];
+    TCHAR s[32];
     ConvertUInt32ToString(i, s);
     int index = (int)m_NumThreads.AddString(s);
     m_NumThreads.SetItemData(index, (UInt32)i);
@@ -1649,7 +1761,8 @@ void CCompressDialog::SetNumThreads()
   SetNearestSelectComboBox(m_NumThreads, defaultValue);
 }
 
-UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
+
+UInt64 CCompressDialog::GetMemoryUsage_Dict_DecompMem(UInt64 dict64, UInt64 &decompressMemory)
 {
   decompressMemory = UInt64(Int64(-1));
   UInt32 level = GetLevel2();
@@ -1682,15 +1795,19 @@ UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
     case kLZMA:
     case kLZMA2:
     {
+      const UInt32 dict = (dict64 >= kLzmaMaxDictSize ? kLzmaMaxDictSize : (UInt32)dict64);
       UInt32 hs = dict - 1;
       hs |= (hs >> 1);
       hs |= (hs >> 2);
       hs |= (hs >> 4);
       hs |= (hs >> 8);
       hs >>= 1;
-      hs |= 0xFFFF;
-      if (hs > (1 << 24))
+      if (hs >= (1 << 24))
         hs >>= 1;
+      hs |= (1 << 16) - 1;
+      // if (numHashBytes >= 5)
+      if (level < 5)
+        hs |= (256 << 10) - 1;
       hs++;
       UInt64 size1 = (UInt64)hs * 4;
       size1 += (UInt64)dict * 4;
@@ -1711,10 +1828,7 @@ UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
 
       if (methidId != kLZMA && numBlockThreads != 1)
       {
-        chunkSize = (UInt64)dict << 2;
-        chunkSize = MyMax(chunkSize, (UInt64)(1 << 20));
-        chunkSize = MyMin(chunkSize, (UInt64)(1 << 28));
-        chunkSize = MyMax(chunkSize, (UInt64)dict);
+        chunkSize = Get_Lzma2_ChunkSize(dict);
 
         if (IsXzFormat())
         {
@@ -1733,7 +1847,15 @@ UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
       }
 
       if (chunkSize == 0)
-        size += numBlockThreads * (size1 + (UInt64)dict * 3 / 2);
+      {
+        const UInt32 kBlockSizeMax = (UInt32)0 - (UInt32)(1 << 16);
+        UInt64 blockSize = (UInt64)dict + (1 << 16)
+          + (numThreads1 > 1 ? (1 << 20) : 0);
+        blockSize += (blockSize >> (blockSize < ((UInt32)1 << 30) ? 1 : 2));
+        if (blockSize >= kBlockSizeMax)
+          blockSize = kBlockSizeMax;
+        size += numBlockThreads * (size1 + blockSize);
+      }
       else
       {
         size += numBlockThreads * (size1 + chunkSize);
@@ -1747,7 +1869,7 @@ UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
   
     case kPPMd:
     {
-      decompressMemory = dict + (2 << 20);
+      decompressMemory = dict64 + (2 << 20);
       return size + decompressMemory;
     }
     
@@ -1775,7 +1897,7 @@ UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
     
     case kPPMdZip:
     {
-      decompressMemory = dict + (2 << 20);
+      decompressMemory = dict64 + (2 << 20);
       return size + (UInt64)decompressMemory * numThreads;
     }
   }
@@ -1783,9 +1905,15 @@ UInt64 CCompressDialog::GetMemoryUsage(UInt32 dict, UInt64 &decompressMemory)
   return (UInt64)(Int64)-1;
 }
 
-UInt64 CCompressDialog::GetMemoryUsage(UInt64 &decompressMemory)
+UInt64 CCompressDialog::GetMemoryUsage_DecompMem(UInt64 &decompressMemory)
 {
-  return GetMemoryUsage(GetDictionary(), decompressMemory);
+  return GetMemoryUsage_Dict_DecompMem(GetDict(), decompressMemory);
+}
+
+UInt64 CCompressDialog::GetMemoryUsageComp_Dict(UInt64 dict64)
+{
+  UInt64 decompressMemory;
+  return GetMemoryUsage_Dict_DecompMem(dict64, decompressMemory);
 }
 
 void CCompressDialog::PrintMemUsage(UINT res, UInt64 value)
@@ -1795,17 +1923,26 @@ void CCompressDialog::PrintMemUsage(UINT res, UInt64 value)
     SetItemText(res, TEXT("?"));
     return;
   }
-  value = (value + (1 << 20) - 1) >> 20;
-  TCHAR s[40];
-  ConvertUInt64ToString(value, s);
-  lstrcat(s, TEXT(" MB"));
+  TCHAR s[32];
+  if (value <= ((UInt64)16 << 30))
+  {
+    value = (value + (1 << 20) - 1) >> 20;
+    ConvertUInt64ToString(value, s);
+    lstrcat(s, TEXT(" MB"));
+  }
+  else
+  {
+    value = (value + (1 << 30) - 1) >> 30;
+    ConvertUInt64ToString(value, s);
+    lstrcat(s, TEXT(" GB"));
+  }
   SetItemText(res, s);
 }
     
 void CCompressDialog::SetMemoryUsage()
 {
   UInt64 decompressMem;
-  UInt64 memUsage = GetMemoryUsage(decompressMem);
+  const UInt64 memUsage = GetMemoryUsage_DecompMem(decompressMem);
   PrintMemUsage(IDT_COMPRESS_MEMORY_VALUE, memUsage);
   PrintMemUsage(IDT_COMPRESS_MEMORY_DE_VALUE, decompressMem);
 }
@@ -1814,7 +1951,7 @@ void CCompressDialog::SetParams()
 {
   const CArcInfoEx &ai = (*ArcFormats)[GetFormatIndex()];
   m_Params.SetText(TEXT(""));
-  int index = FindRegistryFormat(ai.Name);
+  const int index = FindRegistryFormat(ai.Name);
   if (index >= 0)
   {
     const NCompression::CFormatOptions &fo = m_RegistryInfo.Formats[index];
@@ -1825,13 +1962,34 @@ void CCompressDialog::SetParams()
 void CCompressDialog::SaveOptionsInMem()
 {
   const CArcInfoEx &ai = (*ArcFormats)[Info.FormatIndex];
-  int index = FindRegistryFormatAlways(ai.Name);
+  const int index = FindRegistryFormatAlways(ai.Name);
   m_Params.GetText(Info.Options);
   Info.Options.Trim();
   NCompression::CFormatOptions &fo = m_RegistryInfo.Formats[index];
   fo.Options = Info.Options;
   fo.Level = GetLevelSpec();
-  fo.Dictionary = GetDictionarySpec();
+  {
+    const UInt64 dict64 = GetDictSpec();
+    UInt32 dict32;
+    if (dict64 == (UInt64)(Int64)-1)
+      dict32 = (UInt32)(Int32)-1;
+    else
+    {
+      dict32 = (UInt32)dict64;
+      if (dict64 != dict32)
+      {
+        /* here we must write 32-bit value for registry that indicates big_value
+           (UInt32)(Int32)-1  : is used as marker for default size
+           (UInt32)(Int32)-2  : it can be used to indicate big value (4 GiB)
+           the value must be larger than threshold
+        */
+        dict32 = (UInt32)(Int32)-2;
+        // dict32 = kLzmaMaxDictSize; // it must be larger than threshold
+      }
+    }
+    fo.Dictionary = dict32;
+  }
+
   fo.Order = GetOrderSpec();
   fo.Method = GetMethodSpec();
   fo.EncryptionMethod = GetEncryptionMethodSpec();

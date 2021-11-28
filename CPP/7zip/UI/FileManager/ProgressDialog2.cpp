@@ -348,7 +348,9 @@ bool CProgressDialog::OnInit()
   INIT_AS_UNDEFINED(_processed_Prev);
   INIT_AS_UNDEFINED(_packed_Prev);
   INIT_AS_UNDEFINED(_ratio_Prev);
+  
   _filesStr_Prev.Empty();
+  _filesTotStr_Prev.Empty();
 
   _foreground = true;
 
@@ -423,13 +425,14 @@ static const UINT kIDs[] =
   IDT_PROGRESS_ELAPSED,   IDT_PROGRESS_ELAPSED_VAL,
   IDT_PROGRESS_REMAINING, IDT_PROGRESS_REMAINING_VAL,
   IDT_PROGRESS_FILES,     IDT_PROGRESS_FILES_VAL,
-  IDT_PROGRESS_RATIO,     IDT_PROGRESS_RATIO_VAL,
+  0,                      IDT_PROGRESS_FILES_TOTAL,
   IDT_PROGRESS_ERRORS,    IDT_PROGRESS_ERRORS_VAL,
   
   IDT_PROGRESS_TOTAL,     IDT_PROGRESS_TOTAL_VAL,
   IDT_PROGRESS_SPEED,     IDT_PROGRESS_SPEED_VAL,
   IDT_PROGRESS_PROCESSED, IDT_PROGRESS_PROCESSED_VAL,
-  IDT_PROGRESS_PACKED,    IDT_PROGRESS_PACKED_VAL
+  IDT_PROGRESS_PACKED,    IDT_PROGRESS_PACKED_VAL,
+  IDT_PROGRESS_RATIO,     IDT_PROGRESS_RATIO_VAL
 };
 
 bool CProgressDialog::OnSize(WPARAM /* wParam */, int xSize, int ySize)
@@ -536,16 +539,17 @@ bool CProgressDialog::OnSize(WPARAM /* wParam */, int xSize, int ySize)
   labelSize = gSize - valueSize;
 
   yPos = my;
-  for (int i = 0; i < ARRAY_SIZE(kIDs); i += 2)
+  for (unsigned i = 0; i < ARRAY_SIZE(kIDs); i += 2)
   {
     int x = mx;
-    const int kNumColumn1Items = 5 * 2;
+    const unsigned kNumColumn1Items = 5 * 2;
     if (i >= kNumColumn1Items)
     {
       if (i == kNumColumn1Items)
         yPos = my;
       x = mx + gSize + padSize;
     }
+    if (kIDs[i] != 0)
     MoveItem(kIDs[i], x, yPos, labelSize, sY);
     MoveItem(kIDs[i + 1], x + labelSize, yPos, valueSize, sY);
     yPos += sStep;
@@ -583,6 +587,7 @@ void CProgressDialog::SetProgressPos(UInt64 pos)
 
 #define UINT_TO_STR_2(val) { s[0] = (wchar_t)('0' + (val) / 10); s[1] = (wchar_t)('0' + (val) % 10); s += 2; }
 
+void GetTimeString(UInt64 timeValue, wchar_t *s);
 void GetTimeString(UInt64 timeValue, wchar_t *s)
 {
   UInt64 hours = timeValue / 3600;
@@ -616,6 +621,7 @@ static void ConvertSizeToString(UInt64 v, wchar_t *s)
     s += MyStringLen(s);
     *s++ = ' ';
     *s++ = c;
+    *s++ = 'B';
     *s++ = 0;
   }
 }
@@ -828,16 +834,24 @@ void CProgressDialog::UpdateStatInfo(bool showAll)
     
     {
       wchar_t s[64];
+      
       ConvertUInt64ToString(completedFiles, s);
-      if (IS_DEFINED_VAL(totalFiles))
-      {
-        MyStringCat(s, L" / ");
-        ConvertUInt64ToString(totalFiles, s + MyStringLen(s));
-      }
       if (_filesStr_Prev != s)
       {
         _filesStr_Prev = s;
         SetItemText(IDT_PROGRESS_FILES_VAL, s);
+      }
+      
+      s[0] = 0;
+      if (IS_DEFINED_VAL(totalFiles))
+      {
+        MyStringCopy(s, L" / ");
+        ConvertUInt64ToString(totalFiles, s + MyStringLen(s));
+      }
+      if (_filesTotStr_Prev != s)
+      {
+        _filesTotStr_Prev = s;
+        SetItemText(IDT_PROGRESS_FILES_TOTAL, s);
       }
     }
     
@@ -892,8 +906,8 @@ void CProgressDialog::UpdateStatInfo(bool showAll)
       int slashPos = _filePath.ReverseFind_PathSepar();
       if (slashPos >= 0)
       {
-        s1.SetFrom(_filePath, slashPos + 1);
-        s2 = _filePath.Ptr(slashPos + 1);
+        s1.SetFrom(_filePath, (unsigned)(slashPos + 1));
+        s2 = _filePath.Ptr((unsigned)(slashPos + 1));
       }
       else
         s2 = _filePath;
@@ -942,7 +956,7 @@ INT_PTR CProgressDialog::Create(const UString &title, NWindows::CThread &thread,
       CWaitCursor waitCursor;
       HANDLE h[] = { thread, _createDialogEvent };
       
-      WRes res2 = WaitForMultipleObjects(ARRAY_SIZE(h), h, FALSE, kCreateDelay);
+      DWORD res2 = WaitForMultipleObjects(ARRAY_SIZE(h), h, FALSE, kCreateDelay);
       if (res2 == WAIT_OBJECT_0 && !Sync.ThereIsMessage())
         return 0;
     }
@@ -954,9 +968,8 @@ INT_PTR CProgressDialog::Create(const UString &title, NWindows::CThread &thread,
   {
     _wasCreated = true;
     _dialogCreatedEvent.Set();
-    res = res;
   }
-  thread.Wait();
+  thread.Wait_Close();
   if (!MessagesDisplayed)
     MessageBoxW(wndParent, L"Progress Error", L"7-Zip", MB_ICONERROR);
   return res;
@@ -1024,8 +1037,13 @@ bool CProgressDialog::OnMessage(UINT message, WPARAM wParam, LPARAM lParam)
   {
     case kCloseMessage:
     {
-      KillTimer(_timer);
-      _timer = 0;
+      if (_timer)
+      {
+        /* 21.03 : KillTimer(kTimerID) instead of KillTimer(_timer).
+           But (_timer == kTimerID) in Win10. So it worked too */
+        KillTimer(kTimerID);
+        _timer = 0;
+      }
       if (_inCancelMessageBox)
       {
         _externalCloseMessageWasReceived = true;
